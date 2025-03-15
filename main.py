@@ -71,58 +71,38 @@ class HackintoshFlasher(tk.Tk):
         self.refresh_usb_drives()
 
     def get_usb_drives(self):
-        usb_drives = []
-        try:
-            # Get all disk drives
-            cmd = 'wmic diskdrive where "MediaType=\'Removable Media\'" get Index,Size,Model /format:csv'
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            lines = result.stdout.strip().split('\n')[1:]  # Skip header
-        
-            # Get physical disk numbers and their assigned letters
-            cmd_letters = 'wmic logicaldisk where "DriveType=2" get DeviceID,Name /format:csv'
-            result_letters = subprocess.run(cmd_letters, capture_output=True, text=True)
-            drive_letters = {line.split(',')[1].strip(): line.split(',')[2].strip() 
-                            for line in result_letters.stdout.strip().split('\n')[1:] 
-                            if line.strip()}
-        
-            for line in lines:
-                if line.strip():
-                    parts = line.split(',')
-                    if len(parts) >= 3:
-                        model = parts[1].strip()
-                        try:
-                            size_bytes = int(parts[2]) if parts[2].strip().isdigit() else 0
-                            size_gb = size_bytes / (1024**3)
-                            disk_number = parts[3].strip() if len(parts) > 3 else "0"
-                            
-                            # Only show drives between 4GB and 128GB
-                            if 4 <= size_gb <= 128:
-                                drive_info = f"\\\\.\\PHYSICALDRIVE{disk_number} - {model} ({size_gb:.1f} GB)"
-                                usb_drives.append((drive_info, f"\\\\.\\PHYSICALDRIVE{disk_number}"))
-                        except ValueError:
-                            continue
+        usb_drives = []        try:
+            # Get removable drives using psutil
+            for partition in psutil.disk_partitions():
+                try:
+                    if 'removable' in partition.opts.lower():
+                        usage = psutil.disk_usage(partition.mountpoint)
+                        size_gb = usage.total / (1024**3)
+                        
+                        # Filter drives between 4GB and 128GB
+                        if 4 <= size_gb <= 128:
+                            drive_letter = partition.device.rstrip('\\')
+                            drive_info = f"{drive_letter} ({size_gb:.1f} GB)"
+                            usb_drives.append((drive_info, drive_letter))
+                except Exception:
+                    continue
+                
         except Exception as e:
-            messagebox.showerror("Error", f"Error detecting USB drives: {e}")
+            print(f"Error detecting USB drives: {e}")
         return usb_drives
     
     def flash_usb(self):
         try:
-            # Extract the physical drive number from the selected drive info
-            selected_drive = self.usb_drives_combo.get()
-            physical_drive = selected_drive.split('-')[0].strip()
-            
-            # Verify it's a valid drive path
-            if not physical_drive.startswith("\\\\.\\PHYSICALDRIVE"):
-                raise ValueError("Invalid drive selection")
-
-            selected_drive = self.usb_drives_combo.get().split('-')[0].strip()
+            # Get drive letter from selection
+            selected_drive = self.usb_drives_combo.get().split()[0]
             iso_path = self.image_path.get()
             efi_path = self.efi_path.get()
-
-            # Step 1: Clean the disk and create partitions
+    
+            # Step 1: Format the drive
             self.update_progress(5, "Preparing disk...")
-            clean_cmd = f'diskpart /s "{os.path.join(os.path.dirname(__file__), "diskpart.txt")}"'
-            
+            format_cmd = f'format {selected_drive} /fs:fat32 /q /y'
+            subprocess.run(format_cmd, shell=True, capture_output=True)
+    
             # Create diskpart script
             with open("diskpart.txt", "w") as f:
                 f.write(f"select disk {selected_drive[-1]}\n")  # Get last character of disk number
