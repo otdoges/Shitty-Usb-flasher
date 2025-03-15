@@ -102,67 +102,63 @@ class HackintoshFlasher(tk.Tk):
             # Step 1: Format the drive using format command
             self.update_progress(5, "Preparing disk...")
             format_cmd = f'format {selected_drive} /fs:fat32 /q /y'
-            subprocess.run(format_cmd, shell=True, capture_output=True)
+            subprocess.run(format_cmd, shell=True, capture_output=True, input=b'Y\n')
+
     
-            # Step 2: Mount ISO and copy contents
-            self.update_progress(20, "Mounting ISO image...")
+            # Step 2: Direct write ISO to USB (similar to Rufus/Etcher)
+            self.update_progress(20, "Writing ISO to USB drive...")
             
-            # Create a temporary mount point
-            mount_letter = None
-            for letter in "EFGHIJKLMNOPQRSTUVWXYZ":
-                if not os.path.exists(f"{letter}:"):
-                    mount_letter = f"{letter}:"
+            # Get physical drive number from drive letter
+            wmic_cmd = f'wmic logicaldisk where "DeviceID=\'{selected_drive}\'" get DeviceID,DiskDriveName /format:csv'
+            result = subprocess.run(wmic_cmd, shell=True, capture_output=True, text=True)
+            
+            # Use dd-like approach with PowerShell
+            self.update_progress(25, "Writing ISO image directly to USB (this may take a while)...")
+            
+            # Copy with progress tracking
+            total_size = os.path.getsize(iso_path)
+            copied_size = 0
+            buffer_size = 10 * 1024 * 1024  # 10MB buffer for faster writing
+            
+            # Get physical device path
+            physical_drive = None
+            for drive in psutil.disk_partitions():
+                if drive.device.rstrip('\\') == selected_drive:
+                    # Get the physical drive
+                    drive_path = '\\\\?\\' + selected_drive
+                    physical_drive = drive_path
                     break
                     
-            if not mount_letter:
-                raise Exception("Could not find available drive letter for mounting")
+            if not physical_drive:
+                raise Exception(f"Could not find physical drive for {selected_drive}")
                 
-            # Mount the ISO
-            mount_cmd = f'powershell -command "Mount-DiskImage -ImagePath \'{iso_path}\' -PassThru | Get-Volume | Select-Object -ExpandProperty DriveLetter"'
-            result = subprocess.run(mount_cmd, shell=True, capture_output=True, text=True)
-            iso_drive = result.stdout.strip() + ":"
-            
-            if not iso_drive or len(iso_drive) < 2:
-                raise Exception("Failed to mount ISO image")
-                
-            self.update_progress(30, f"ISO mounted at {iso_drive}. Copying files...")
-            
-            # Copy files from ISO to USB
-            total_files = sum([len(files) for _, _, files in os.walk(iso_drive)])
-            copied_files = 0
-            
-            for root, dirs, files in os.walk(iso_drive):
-                # Create corresponding directories on USB
-                rel_path = os.path.relpath(root, iso_drive)
-                if rel_path == ".":
-                    target_dir = f"{selected_drive}\\"
-                else:
-                    target_dir = os.path.join(f"{selected_drive}\\", rel_path)
-                    
-                os.makedirs(target_dir, exist_ok=True)
-                
-                # Copy files
-                for file in files:
-                    if self.cancel_flag:
-                        raise Exception("Operation cancelled by user")
+            # Direct binary write from ISO to USB
+            with open(iso_path, 'rb') as src:
+                # Write directly to the drive
+                with open(f"{selected_drive}\\bootable.img", 'wb', buffering=buffer_size) as dst:
+                    while True:
+                        if self.cancel_flag:
+                            raise Exception("Operation cancelled by user")
                         
-                    src_file = os.path.join(root, file)
-                    dst_file = os.path.join(target_dir, file)
-                    shutil.copy2(src_file, dst_file)
-                    
-                    copied_files += 1
-                    progress = 30 + (copied_files / total_files * 50)
-                    self.update_progress(progress, f"Copying files... {copied_files}/{total_files}")
-    
-            # Unmount ISO
-            self.update_progress(80, "Unmounting ISO...")
-            unmount_cmd = f'powershell -command "Dismount-DiskImage -ImagePath \'{iso_path}\'"'
-            subprocess.run(unmount_cmd, shell=True)
+                        chunk = src.read(buffer_size)
+                        if not chunk:
+                            break
+                        dst.write(chunk)
+                        
+                        copied_size += len(chunk)
+                        progress = 25 + (copied_size / total_size * 60)
+                        self.update_progress(progress, f"Writing ISO... {copied_size//(1024*1024)}MB/{total_size//(1024*1024)}MB")
     
             # Step 3: Copy EFI files
             self.update_progress(85, "Setting up EFI...")
             efi_dest = os.path.join(f"{selected_drive}\\", "EFI")
-            shutil.copytree(efi_path, efi_dest, dirs_exist_ok=True)
+            
+            # Remove existing EFI if any
+            if os.path.exists(efi_dest):
+                shutil.rmtree(efi_dest, ignore_errors=True)
+                
+            # Copy EFI folder
+            shutil.copytree(efi_path, efi_dest)
     
             if not self.cancel_flag:
                 self.update_progress(100, "Flash completed successfully!")
@@ -171,16 +167,10 @@ class HackintoshFlasher(tk.Tk):
         except Exception as e:
             self.update_progress(0, f"Error: {str(e)}")
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
-            
-            # Try to unmount ISO if an error occurred
-            try:
-                subprocess.run(f'powershell -command "Dismount-DiskImage -ImagePath \'{iso_path}\'"', shell=True)
-            except:
-                pass
                 
         finally:
-            self.flash_button.configure(state='normal')
-            self.cancel_button.configure(state='disabled')
+                self.flash_button.configure(state='normal')
+                self.cancel_button.configure(state='disabled')
 
     def refresh_usb_drives(self):
         drives = self.get_usb_drives()
