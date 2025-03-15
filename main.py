@@ -73,26 +73,48 @@ class HackintoshFlasher(tk.Tk):
     def get_usb_drives(self):
         usb_drives = []
         try:
-            cmd = 'wmic diskdrive get DeviceID,Size,Model /format:csv'
+            # Get all disk drives
+            cmd = 'wmic diskdrive where "MediaType=\'Removable Media\'" get Index,Size,Model /format:csv'
             result = subprocess.run(cmd, capture_output=True, text=True)
             lines = result.stdout.strip().split('\n')[1:]  # Skip header
-            
+        
+            # Get physical disk numbers and their assigned letters
+            cmd_letters = 'wmic logicaldisk where "DriveType=2" get DeviceID,Name /format:csv'
+            result_letters = subprocess.run(cmd_letters, capture_output=True, text=True)
+            drive_letters = {line.split(',')[1].strip(): line.split(',')[2].strip() 
+                            for line in result_letters.stdout.strip().split('\n')[1:] 
+                            if line.strip()}
+        
             for line in lines:
                 if line.strip():
                     parts = line.split(',')
                     if len(parts) >= 3:
-                        device_id = parts[1]
-                        size_bytes = int(parts[2]) if parts[2].strip().isdigit() else 0
-                        size_gb = size_bytes / (1024**3)
-                        if 4 <= size_gb <= 128:  # Only show drives between 4GB and 128GB
-                            drive_info = f"{device_id} - {size_gb:.1f} GB"
-                            usb_drives.append((drive_info, device_id))
+                        model = parts[1].strip()
+                        try:
+                            size_bytes = int(parts[2]) if parts[2].strip().isdigit() else 0
+                            size_gb = size_bytes / (1024**3)
+                            disk_number = parts[3].strip() if len(parts) > 3 else "0"
+                            
+                            # Only show drives between 4GB and 128GB
+                            if 4 <= size_gb <= 128:
+                                drive_info = f"\\\\.\\PHYSICALDRIVE{disk_number} - {model} ({size_gb:.1f} GB)"
+                                usb_drives.append((drive_info, f"\\\\.\\PHYSICALDRIVE{disk_number}"))
+                        except ValueError:
+                            continue
         except Exception as e:
-            print(f"Error detecting USB drives: {e}")
+            messagebox.showerror("Error", f"Error detecting USB drives: {e}")
         return usb_drives
-
+    
     def flash_usb(self):
         try:
+            # Extract the physical drive number from the selected drive info
+            selected_drive = self.usb_drives_combo.get()
+            physical_drive = selected_drive.split('-')[0].strip()
+            
+            # Verify it's a valid drive path
+            if not physical_drive.startswith("\\\\.\\PHYSICALDRIVE"):
+                raise ValueError("Invalid drive selection")
+
             selected_drive = self.usb_drives_combo.get().split('-')[0].strip()
             iso_path = self.image_path.get()
             efi_path = self.efi_path.get()
